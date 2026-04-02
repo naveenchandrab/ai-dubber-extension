@@ -1,13 +1,13 @@
 (() => {
   class Translator {
-    constructor() {
+    constructor(serverUrl = "http://localhost:3000") {
       this.languageCodes = {
         Kannada: "kn",
         Hindi: "hi",
         Tamil: "ta",
         English: "en",
       };
-      this.apiBaseUrl = "https://translate.googleapis.com/translate_a/single";
+      this.serverUrl = serverUrl;
     }
 
     getLanguageCode(language) {
@@ -22,38 +22,37 @@
         return text;
       }
 
-      const target = this.getLanguageCode(targetLanguage);
-      const url = `${this.apiBaseUrl}?client=gtx&sl=auto&tl=${encodeURIComponent(
-        target,
-      )}&dt=t&q=${encodeURIComponent(text)}`;
+      const body = {
+        text: text.trim(),
+        targetLang: this.getLanguageCode(targetLanguage),
+      };
 
       try {
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
+        const response = await Utils.fetchWithRetry(
+          `${this.serverUrl}/translate`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
           },
-          mode: "cors",
-        });
+          2,
+        );
 
         if (!response.ok) {
-          throw new Error(`Translate API returned ${response.status}`);
+          const errorText = await response.text().catch(() => "");
+          throw new Error(
+            `Translate backend returned ${response.status} ${errorText}`,
+          );
         }
 
         const data = await response.json();
-        if (Array.isArray(data) && Array.isArray(data[0])) {
-          const translated = data[0]
-            .map((segment) => (Array.isArray(segment) ? segment[0] : ""))
-            .join("");
-          if (translated) {
-            return translated.trim();
-          }
-        }
+        return data.translatedText || text;
       } catch (error) {
-        console.warn("Translator error:", error);
+        console.warn("Translator backend error:", error);
+        return text;
       }
-
-      return text;
     }
   }
 

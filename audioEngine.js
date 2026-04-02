@@ -7,6 +7,7 @@
       this.scheduledTimer = null;
       this.active = false;
       this.videoMutedByEngine = false;
+      this.muteVideoOnDub = true;
     }
 
     attachVideo(video) {
@@ -17,8 +18,20 @@
       this.video = video;
       this.video.addEventListener("play", () => this.onVideoPlay());
       this.video.addEventListener("pause", () => this.onVideoPause());
-      this.video.addEventListener("seeking", () => this.resync());
+      this.video.addEventListener("seeking", () => this.onVideoSeek());
+      this.video.addEventListener("seeked", () => this.onVideoSeek());
+      this.video.addEventListener("ratechange", () =>
+        this.onPlaybackRateChange(),
+      );
       this.video.addEventListener("timeupdate", () => this.resync());
+    }
+
+    setOriginalAudioAllowed(allowOriginal) {
+      this.muteVideoOnDub = !allowOriginal;
+      if (!this.muteVideoOnDub && this.videoMutedByEngine && this.video) {
+        this.video.muted = false;
+        this.videoMutedByEngine = false;
+      }
     }
 
     enable() {
@@ -28,27 +41,24 @@
 
     disable() {
       this.active = false;
+      this.cancelCurrent();
+      this.queue = [];
       if (this.video && this.videoMutedByEngine) {
         this.video.muted = false;
         this.videoMutedByEngine = false;
       }
-      this.cancelCurrent();
-      this.queue = [];
     }
 
     enqueue(clip) {
       if (!clip || (!clip.audioBlob && !clip.audioUrl)) {
         return;
       }
+
       if (this.queue.some((item) => item.id === clip.id)) {
         return;
       }
 
-      const queued = {
-        ...clip,
-        queuedAt: Date.now(),
-      };
-      this.queue.push(queued);
+      this.queue.push({ ...clip, queuedAt: Date.now() });
       this.queue.sort((a, b) => a.start - b.start);
       this.scheduleNext();
     }
@@ -58,17 +68,17 @@
         return;
       }
 
+      if (this.scheduledTimer) {
+        clearTimeout(this.scheduledTimer);
+        this.scheduledTimer = null;
+      }
+
       if (this.queue.length === 0) {
         if (this.videoMutedByEngine) {
           this.video.muted = false;
           this.videoMutedByEngine = false;
         }
         return;
-      }
-
-      if (this.scheduledTimer) {
-        clearTimeout(this.scheduledTimer);
-        this.scheduledTimer = null;
       }
 
       const next = this.queue[0];
@@ -81,7 +91,7 @@
         return;
       }
 
-      const delay = Math.max(0, offset * 1000 - 120);
+      const delay = Math.max(0, offset * 1000 - 100);
       this.scheduledTimer = window.setTimeout(() => {
         this.scheduleNext();
       }, delay);
@@ -99,9 +109,10 @@
       audio.preload = "auto";
       audio.autoplay = true;
       audio.playsInline = true;
-      audio.volume = 1;
+      audio.volume = 0;
       audio.dataset.clipId = clip.id;
-      audio.startTime = clip.start;
+      audio.dataset.startTime = clip.start;
+      audio.playbackRate = this.video?.playbackRate || 1;
 
       if (clip.audioBlob) {
         audio.src = URL.createObjectURL(clip.audioBlob);
@@ -109,7 +120,25 @@
       } else {
         audio.src = clip.audioUrl;
       }
-      audio.load();
+
+      audio.addEventListener("canplaythrough", () => {
+        if (this.video && this.muteVideoOnDub && !this.videoMutedByEngine) {
+          this.video.muted = true;
+          this.videoMutedByEngine = true;
+        }
+        this.fadeAudio(audio, 0, 1, 180);
+        if (!this.video.paused) {
+          audio.play().catch(() => {
+            /* ignore autoplay restrictions */
+          });
+        }
+      });
+
+      audio.addEventListener("timeupdate", () => {
+        if (audio.duration && audio.duration - audio.currentTime < 0.2) {
+          audio.volume = Math.max(0, audio.volume - 0.02);
+        }
+      });
 
       audio.addEventListener("ended", () => {
         if (audio.parentElement) {
@@ -122,13 +151,6 @@
           this.currentAudio = null;
         }
         this.scheduleNext();
-      });
-
-      audio.addEventListener("canplaythrough", () => {
-        if (this.video && !this.videoMutedByEngine) {
-          this.video.muted = true;
-          this.videoMutedByEngine = true;
-        }
       });
 
       audio.addEventListener("error", (event) => {
@@ -156,38 +178,72 @@
       }
     }
 
+    fadeAudio(audio, from, to, duration) {
+      if (!audio) {
+        return;
+      }
+
+      const start = performance.now();
+      const change = to - from;
+
+      const update = () => {
+        const elapsed = performance.now() - start;
+        const progress = Math.min(elapsed / duration, 1);
+        audio.volume = from + change * progress;
+        if (progress < 1) {
+          requestAnimationFrame(update);
+        }
+      };
+
+      requestAnimationFrame(update);
+    }
+
     cancelCurrent() {
       if (this.scheduledTimer) {
         clearTimeout(this.scheduledTimer);
         this.scheduledTimer = null;
       }
+
       if (this.currentAudio) {
         this.currentAudio.pause();
         if (this.currentAudio.parentElement) {
           this.currentAudio.parentElement.removeChild(this.currentAudio);
         }
-        try {
-          URL.revokeObjectURL(this.currentAudio.src);
-        } catch (error) {
-          /* ignore */
+        if (this.currentAudio.dataset.isBlob === "true") {
+          try {
+            URL.revokeObjectURL(this.currentAudio.src);
+          } catch (error) {
+            /* ignore */
+          }
         }
         this.currentAudio = null;
       }
     }
 
-    resync() {
-      if (!this.video || !this.currentAudio || this.video.paused) {
+    resync(force = false) {
+      if (!this.video || !this.currentAudio) {
         return;
       }
 
-      const drift =
-        this.currentAudio.currentTime -
-        Math.max(0, this.video.currentTime - this.currentAudio.startTime);
-      if (Math.abs(drift) > 0.5) {
-        this.currentAudio.currentTime = Math.max(
-          0,
-          this.currentAudio.currentTime - drift,
-        );
+      if (this.video.paused) {
+        return;
+      }
+
+      const expected = Math.max(
+        0,
+        this.video.currentTime -
+          parseFloat(this.currentAudio.dataset.startTime || "0"),
+      );
+      const drift = this.currentAudio.currentTime - expected;
+
+      if (Math.abs(drift) > 0.3 || force) {
+        this.currentAudio.currentTime = Math.max(0, expected);
+        this.currentAudio.playbackRate = this.video.playbackRate || 1;
+        if (!this.video.paused) {
+          this.currentAudio.play().catch(() => {
+            /* ignore */
+          });
+        }
       }
     }
 
@@ -204,6 +260,18 @@
         });
       }
       this.scheduleNext();
+    }
+
+    onVideoSeek() {
+      this.queue = [];
+      this.cancelCurrent();
+      this.scheduleNext();
+    }
+
+    onPlaybackRateChange() {
+      if (this.currentAudio && this.video) {
+        this.currentAudio.playbackRate = this.video.playbackRate || 1;
+      }
     }
   }
 

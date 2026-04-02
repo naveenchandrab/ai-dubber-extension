@@ -26,13 +26,32 @@
             <option value="Tamil">Tamil</option>
           </select>
         </div>
+        <div class="row">
+          <label for="voiceSelect">Voice profile</label>
+          <select id="voiceSelect">
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>
+            <input id="toggleOriginalAudio" type="checkbox" />
+            Keep original audio
+          </label>
+        </div>
         <div class="status-row">
           <span>Status:</span>
           <strong id="statusLabel">Idle</strong>
         </div>
+        <div class="status-row">
+          <span>Latency:</span>
+          <strong id="latencyLabel">—</strong>
+        </div>
       </main>
       <footer>
-        <small>Load this extension unpacked in Chrome.</small>
+        <small
+          >Run backend on localhost:3000 and load unpacked extension.</small
+        >
       </footer>
     </div>
     <script src="popup.js"></script>

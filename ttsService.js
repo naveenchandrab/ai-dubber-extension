@@ -1,15 +1,13 @@
 (() => {
   class TTSService {
-    constructor() {
+    constructor(serverUrl = "http://localhost:3000") {
       this.languageCodes = {
         Kannada: "kn",
         Hindi: "hi",
         Tamil: "ta",
         English: "en",
       };
-      this.baseUrl = "https://translate.google.com/translate_tts";
-      this.client = "tw-ob";
-      this.maxTextLength = 180;
+      this.serverUrl = serverUrl;
     }
 
     getLanguageCode(language) {
@@ -19,20 +17,47 @@
       );
     }
 
-    async synthesizeSpeech(text, targetLanguage = "Kannada") {
+    async synthesizeSpeech(text, targetLanguage = "Kannada", voice = "female") {
       if (!text || !text.trim()) {
-        return { audioBlob: null, audioUrl: null };
+        return { audioBlob: null };
       }
 
-      const languageCode = this.getLanguageCode(targetLanguage);
-      const safeText = text.trim().slice(0, this.maxTextLength);
-      const audioUrl =
-        `${this.baseUrl}?ie=UTF-8&client=${this.client}` +
-        `&tl=${encodeURIComponent(languageCode)}` +
-        `&q=${encodeURIComponent(safeText)}` +
-        `&ttsspeed=1&total=1&idx=0&textlen=${safeText.length}`;
+      const body = {
+        text: text.trim(),
+        targetLang: this.getLanguageCode(targetLanguage),
+        voiceGender: voice,
+      };
 
-      return { audioBlob: null, audioUrl };
+      try {
+        const response = await Utils.fetchWithRetry(
+          `${this.serverUrl}/tts`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          },
+          2,
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "");
+          throw new Error(
+            `TTS backend returned ${response.status} ${errorText}`,
+          );
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const contentType =
+          response.headers.get("content-type") || "audio/mpeg";
+        return {
+          audioBlob: new Blob([arrayBuffer], { type: contentType }),
+        };
+      } catch (error) {
+        console.warn("TTS backend error:", error);
+        return { audioBlob: null };
+      }
     }
   }
 
